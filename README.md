@@ -1,8 +1,8 @@
 # DanTek Bot — les outils de la chaîne, codés en live
 
 Bot Twitch maison né pendant le Dev du Vendredi : commandes, modération,
-récompenses VRAM et (bientôt) une IA locale nommée Mémo.
-Conçu pour tourner 24/7 sur un Steam Deck.
+récompenses VRAM et (bientôt) une IA locale nommée Danteko_Bot.
+Conçu pour tourner pendant mes lives sur un Steam Deck.
 
 ## Stack
 - Python 3.13 · uv (toolchain user-space, SteamOS immuable)
