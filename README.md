@@ -25,9 +25,6 @@ uv run python -m dantek_bot_twitch.main
 #   fenêtre privée (compte bot) : http://localhost:4343/oauth?scopes=user:read:chat%20user:write:chat%20user:bot&force_verify=true
 #   fenêtre normale (streamer)  : http://localhost:4343/oauth?scopes=channel:bot&force_verify=true
 
-## Roadmap
-Voir les issues : chaque épisode du Dev du Vendredi ferme une issue et pose un tag git.
-
 ## Docs
 - docs/ARCHITECTURE.md — schémas & flux
 - docs/DECISIONS.md — journal des choix techniques
