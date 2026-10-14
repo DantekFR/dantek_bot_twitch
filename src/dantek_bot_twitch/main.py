@@ -8,6 +8,7 @@ try:
 
     from dantek_bot_twitch.configs.config_twitch import load_config
     from dantek_bot_twitch.modules.commandes import ChatCommands
+    from dantek_bot_twitch.modules.storage import Database
 except ModuleNotFoundError as e:
     print(f"[ERREUR] Le module est introuvable : {e}")
     raise RuntimeError(
