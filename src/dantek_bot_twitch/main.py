@@ -7,9 +7,10 @@ try:
     from twitchio.ext import commands
 
     from dantek_bot_twitch.configs.config_twitch import load_config
+    from dantek_bot_twitch.modules.commandes import ChatCommands
 except ModuleNotFoundError as e:
     print(f"[ERREUR] Le module est introuvable : {e}")
-    raise RunTimeError(
+    raise RuntimeError(
         "Impossible de démarrer l'application."
     )
 
@@ -28,7 +29,7 @@ class Bot(commands.AutoBot):
         self.config = config
 
     async def setup_hook(self) -> None:
-        await self.add_component(ChatComponent(self))
+        await self.add_component(ChatCommands(self))
 
     async def event_oauth_authorized(self, payload) -> None:
         await self.add_token(payload.access_token, payload.refresh_token)
@@ -46,22 +47,6 @@ class Bot(commands.AutoBot):
 
     async def event_ready(self) -> None:
         LOGGER.info("[OK] AutoBot prêt.")
-
-class ChatComponent(commands.Component):
-    def __init__(self, bot: Bot) -> None:
-        self.bot = bot
-
-    @commands.Component.listener()
-    async def event_message(self, payload: twitchio.ChatMessage) -> None:
-        print(f"[CHAT] {payload.chatter.name}: {payload.text}")
-
-    @commands.command(name="test")
-    async def cmd_test(self, ctx: commands.Context) -> None:
-        await ctx.reply(f"{ctx.chatter.name} : le bot entend le chat!")
-
-    @commands.command(name="discord")
-    async def cmd_discord(self, ctx: commands.Context) -> None:
-        await ctx.reply(f"Voici l'adresse du Discord : discord.gg/KEPpFSEMFY")
 
 def main() -> None:
     twitchio.utils.setup_logging(level=logging.INFO)
