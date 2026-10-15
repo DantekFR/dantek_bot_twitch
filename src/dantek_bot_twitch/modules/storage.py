@@ -62,7 +62,7 @@ class Database:
         )
         self.conn.commit()
 
-    def recent_exchanges(self, viewer_id: str, limit; int = 20) -> listr[str]:
+    def recent_exchanges(self, viewer_id: str, limit, int = 20) -> list[str]:
         rows = self.conn.execute(
             "SELECT viewer, question, answer FROM ai_conversations "
             "WHERE viewer_id=? ORDER_BY created_at DESC LIMIT ?",
