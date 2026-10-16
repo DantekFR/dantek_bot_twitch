@@ -1,9 +1,12 @@
 try:
     import logging
     import re
+    import os
+    import aiohttp
 
     import twitchio
     from twitchio.ext import commands
+    from dantek_bot_twitch.modules.ai_responder import ask_ai
 except ModuleNotFoundError as e:
     print(f"[ERREUR] Le module est introuvable : {e}")
     raise RuntimeError(
@@ -27,7 +30,6 @@ class ChatCommands(commands.Component):
     @commands.Component.listener()
     async def event_message(self, payload: twitchio.ChatMessage) -> None:
         chatter = payload.chatter
-
         if chatter.name.lower() == BOT_LOGIN:
             return
 
@@ -39,27 +41,127 @@ class ChatCommands(commands.Component):
             await self._handle_ai_mention(payload, question)
             return
 
+    def _resolve_broadcaster_id(self, payload) -> str | None:
+        for attr in ("channel_id", "broadcaster_user_id", "broadcaster_id"):
+            value = getattr(payload, attr, None)
+            if value:
+                return str(value)
+
+        cfg = getattr(self.bot, "config", None)
+        owner_id = getattr(cfg, "owner_id", None) if cfg is not None else None
+        if owner_id:
+            return str(owner_id)
+
+        LOGGER.error(
+            "Broadcaster ID introuvable. Attributs payload : %s",
+            [a for a in dir(payload) if not a.startswith("_")],
+        )
+        return None
+
+    async def _send_bot_message(self, text: str, broadcaster_id: str) -> bool:
+        cfg = getattr(self.bot, "config", None)
+        token = getattr(self.bot, "bot_chat_token", None)
+
+        if cfg is None:
+            LOGGER.error("Envoi impossible : self.bot.config est absent.")
+            return False
+
+        if not token:
+            LOGGER.error(
+                "Envoi impossible : bot_chat_token absent. "
+                "Refaire l'OAuth en fenetre privee avec le compte bot."
+            )
+            return False
+
+        sender_id = getattr(cfg, "bot_id", None)
+        client_id = getattr(cfg, "twitch_client_id", None)
+
+        if not sender_id or not client_id:
+            LOGGER.error("Envoi impossible : config.bot_id ou config.twitch_client_id absent.")
+            return False
+
+        message = text[:450]
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Client-Id": str(client_id),
+            "Content-Type": "application/json",
+        }
+
+        body = {
+            "broadcaster_id": str(broadcaster_id),
+            "sender_id": str(sender_id),
+            "message": message,
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.twitch.tv/helix/chat/messages",
+                    headers=headers,
+                    json=body,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    raw = await resp.text()
+
+                    if resp.status == 200:
+                        LOGGER.info("Message envoye via Helix (broadcaster=%s)", broadcaster_id)
+                        return True
+
+                    LOGGER.error("Helix HTTP %s : %s", resp.status, raw[:300])
+
+        except Exception as exc:
+            LOGGER.error("Helix exception : %s", exc)
+
+        return False
+
     async def _handle_ai_mention(self, payload, question: str) -> None:
+        def _call(name, default, *args):
+            storage = getattr(self.bot, "storage", None)
+            if storage is None:
+                return default
+
+            fn = getattr(storage, name, None)
+            if fn is None:
+                return default
+
+            try:
+                return fn(*args)
+            except Exception:
+                return default
+
+        broadcaster_id = self._resolve_broadcaster_id(payload)
+        if not broadcaster_id:
+            return
+
+        chatter_name = getattr(payload.chatter, "name", "viewer") or "viewer"
+
         if not question:
-            await payload.channel.send(
-                f"@{payload.chatter.name}: tape @dantekos_bot suivie de ta question!"
+            await self._send_bot_message(
+                f"@{chatter_name}: tape @{BOT_LOGIN} suivi de ta question!",
+                broadcaster_id,
             )
             return
 
-        vid = str(payload.chatter.id)
-        storage = self.bot.storage
+        vid = str(getattr(payload.chatter, "id", ""))
+
+        facts = _call("facts_text", "")
+        viewer_facts = _call("get_viewer_facts", "", vid)
+        recent = _call("recent_exchanges", [], vid)
+
         try:
-            await payload.channel.send_typing()
-        except Exception:
-            pass
-        answer = await ask_ai(
-            question,
-            storage.facts_text(),
-            storage.get_viewer_facts(vid),
-            storage.recent_exchanges(vid),
+            answer = await ask_ai(question, facts, viewer_facts, recent)
+        except Exception as exc:
+            LOGGER.error("ask_ai en erreur : %s", exc)
+            answer = "J'ai bugue, reessaie."
+
+        if not answer or answer == "...":
+            answer = "Je n'ai rien capte, redemande-moi."
+
+        sent = await self._send_bot_message(
+            f"@{chatter_name}: {answer}",
+            broadcaster_id,
         )
-        storage.log_exchange(vid, payload.chatter.name, question, answer)
-        await payload.channel.send(f"@{payload.chatter.name}: {answer}")
 
     @commands.command(name="test")
     async def cmd_test(self, ctx: commands.Context) -> None:

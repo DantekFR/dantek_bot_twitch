@@ -25,9 +25,10 @@ class Bot(commands.AutoBot):
             bot_id=config.bot_id,
             owner_id=config.owner_id,
             prefix="!",
-            force_subscribe=True,
+            force_subscribe=True
         )
         self.config = config
+        self.bot_chat_token = None
 
     async def setup_hook(self) -> None:
         await self.add_component(ChatCommands(self))
@@ -35,6 +36,7 @@ class Bot(commands.AutoBot):
     async def event_oauth_authorized(self, payload) -> None:
         await self.add_token(payload.access_token, payload.refresh_token)
         if not payload.user_id or payload.user_id == self.bot_id:
+            self.bot_chat_token = payload.access_token
             LOGGER.info("Token du bot ajouté.")
             return
         subs = [eventsub.ChatMessageSubscription(
