@@ -5,7 +5,7 @@ try:
     from dotenv import load_dotenv
 except ModuleNotFoundError as e:
     print(f"[ERREUR] Le module est introuvable : {e}")
-    raise RunTimeError(
+    raise RuntimeError(
         "Impossible de démarrer l'application."
     )
 
