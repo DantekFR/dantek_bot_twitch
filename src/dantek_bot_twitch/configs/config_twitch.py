@@ -34,5 +34,5 @@ def load_config() -> Config:
         owner_id=os.environ["OWNER_ID"],
         twitch_channel=os.environ["TWITCH_CHANNEL"],
         ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
-        ollama_model=os.getenv("OLLAMA_MODEL", "mistral:7b-instruct-q4_K_M"),
+        ollama_model=os.getenv("OLLAMA_MODEL", "qwen3.5:9b"),
     )
