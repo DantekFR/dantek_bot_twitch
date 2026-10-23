@@ -152,7 +152,7 @@ class ChatCommands(commands.Component):
         facts = self._storage_call("facts_text", "")
         viewer_facts = self._storage_call("get_viewer_facts", "", vid)
         recent = self._storage_call("recent_exchanges", [], vid)
-        ambiance = self._storage_call("recent_chat_text", "", broadcaster_id, 6)
+        ambiance = self._storage_call("recent_chat_text", "", broadcaster_id, 10)
         memory = viewer_facts or ""
         if ambiance:
             memory = (
