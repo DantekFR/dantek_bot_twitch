@@ -60,6 +60,7 @@ class TokenStore:
     ) -> None:
         if not access_token:
             return
+
         entry = dict(self.data.get(role, {}))
         entry["access_token"] = access_token
         if refresh_token:
@@ -84,7 +85,17 @@ class TokenStore:
         self.data[role] = entry
         self.save()
 
-async def refresh_twitch_token(client_id: str, client_secret: str, refresh_token: str):
+def _scrub(body:dict) -> dict:
+    out = dict(body)
+    for k in ("access_token", "refresh_token", "client_secret"):
+        if k in out:
+            out[k] = "[REDACTED]"
+    return out
+
+async def refresh_twitch_token(client_id: str, client_secret: str, refresh_token: str) -> dict[str, Any]:
+    if not refresh_token:
+        raise RuntimeError("refresh_token vide : impossible de rafraichir, OAuth requise")
+
     async with aiohttp.ClientSession() as session:
         async with session.post(
             "https://id.twitch.tv/oauth2/token",
@@ -96,6 +107,29 @@ async def refresh_twitch_token(client_id: str, client_secret: str, refresh_token
             },
             timeout=aiohttp.ClientTimeout(total=15),
         ) as resp:
+            try:
+                body = await resp.json()
+            except Exception:
+                body = {}
             if resp.status != 200:
-                raise RuntimeError(f"Twitch token refresh HTTP {resp.status}")
-            return await resp.json()
+                raise RuntimeError(f"Twitch refresh HTTP {resp.status} body={_scrub(body)}")
+            return body
+
+async def validate_twitch_token(access_token: str) -> tuple[str, dict] | None:
+    if not access_token:
+        return ("invalid", None)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://id.twitch.tv/oauth2/validate",
+                header={"Authorization": f"Bearer {access_token}"},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 200:
+                    return ("valid", await resp.json())
+                if resp.status == 401:
+                    return ("invalid", None)
+                return ("error", None)
+    except Exception:
+        return ("error", None)

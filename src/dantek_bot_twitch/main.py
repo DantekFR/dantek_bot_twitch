@@ -9,7 +9,7 @@ try:
 
     from dantek_bot_twitch.configs.config_twitch import load_config
     from dantek_bot_twitch.modules.commandes import ChatCommands
-    from dantek_bot_twitch.modules.token_store import TokenStore, refresh_twitch_token
+    from dantek_bot_twitch.modules.token_store import TokenStore, refresh_twitch_token, validate_twitch_token
 except ModuleNotFoundError as e:
     print(f"[ERREUR] Le module est introuvable : {e}")
     raise RuntimeError(
@@ -24,7 +24,7 @@ try:
 except Exception as e:
     Database = None
     _STORAGE_IMPORT_OK = False
-    print(f"[WARN] Import storage echoue ({e}), memoire desactivee.")
+    print(f"[WARN] Import storage échoué ({e}), mémoire désactivée.")
 
 
 def _already_exists(err) -> bool:
@@ -54,14 +54,16 @@ class Bot(commands.AutoBot):
         self.token_store = TokenStore()
         self._streamer_restored = False
         self._refresh_task = None
+        self._oauth_required: set[str] = set()
+        self._token_fail_cooldown: dict[str, int] = {}
 
         self.storage = None
         if _STORAGE_IMPORT_OK:
             try:
                 self.storage = Database()
-                LOGGER.info("Memoire activee : %s", self.storage.path)
+                LOGGER.info("Mémoire activée : %s", self.storage.path)
             except Exception as e:
-                LOGGER.warning("Init storage echouee (%s), memoire desactivee.", e)
+                LOGGER.warning("Init storage échouée (%s), mémoire désactivée.", e)
                 self.storage = None
 
     async def setup_hook(self) -> None:
@@ -71,98 +73,122 @@ class Bot(commands.AutoBot):
             await self._subscribe_chat(str(getattr(self.config, "owner_id", "") or ""))
         self._refresh_task = asyncio.create_task(self._token_refresh_loop())
 
+    def _mark_oauth_required(self, role: str, reason: str) -> None:
+        self._oauth_required.add(role)
+        self._token_fail_cooldown[role] = int(time.time())
+        if role == "bot":
+            self.bot_chat_token = None
+        LOGGER.error("OAuth requise pour %s : %s", role, reason)
+
+    async def _inject(self, role: str, access_token: str, refresh_token: str) -> bool:
+        try:
+            await self.add_token(access_token, refresh_token)
+        except Exception as e:
+            self._mark_oauth_required(role, f"add_token échoué : {e}")
+            return False
+
+        if role == "bot":
+            self.bot_chat_token = access_token
+        else:
+            self._streamer_restored = True
+        
+        self._oauth_required.discard(role)
+        self._token_fail_cooldown.pop(role, None)
+        return True
+
     async def _restore_saved_tokens(self) -> None:
-        now = int(time.time())
         for role in ("bot", "streamer"):
             entry = self.token_store.get(role)
             if not entry:
+                self._mark_oauth_required(role, "aucun token stocké")
                 continue
             access_token = entry.get("access_token")
             refresh_token = entry.get("refresh_token")
-            if not access_token:
-                LOGGER.warning("Token %s sans access_token, ignore.", role)
+            if not access_token or not refresh_token:
+                self._mark_oauth_required(role, "access_token ou refresh absent dans le fichier")
                 continue
-
-            expires_at = entry.get("expires_at")
-            needs_refresh = True
-            if expires_at:
-                try:
-                    if int(expires_at) > now + 300:
-                        needs_refresh = False
-                except Exception:
-                    needs_refresh = True
-
-            if needs_refresh and refresh_token:
-                try:
-                    new = await refresh_twitch_token(
-                        str(self.config.twitch_client_id),
-                        str(self.config.twitch_client_secret),
-                        str(refresh_token),
-                    )
-                    access_token = new.get("access_token", access_token)
-                    refresh_token = new.get("refresh_token", refresh_token)
-                    self.token_store.set_token(
-                        role=role,
-                        access_token=access_token,
-                        refresh_token=refresh_token,
-                        expires_in=new.get("expires_in"),
-                        scopes=new.get("scopes"),
-                        user_id=entry.get("user_id"),
-                    )
-                    LOGGER.info("Token %s rafraichi.", role)
-                except Exception as e:
-                    LOGGER.warning("Refresh token %s impossible : %s", role, e)
-
-            try:
-                await self.add_token(access_token, refresh_token)
-                if role == "bot":
-                    self.bot_chat_token = access_token
-                    LOGGER.info("Token bot restaure depuis data/tokens.json.")
-                else:
-                    self._streamer_restored = True
-                    LOGGER.info("Token streamer restaure depuis data/tokens.json.")
-            except Exception as e:
-                LOGGER.warning("Injection token %s echouee : %s", role, e)
-
+                
+            if await self._inject(role, access_token, refresh_token):
+                LOGGER.info("Token %s injecté.", role)
+              
     async def _token_refresh_loop(self) -> None:
-        LOGGER.info("Loop de refresh proactif demarree.")
+        LOGGER.info("Loop de refresh proactif démarrée.")
         while True:
             await asyncio.sleep(60)
             now = int(time.time())
             for role in ("bot", "streamer"):
+                if role in self._oauth_required:
+                    if now - self._token_fail_cooldown.get(role, 0) < 900:
+                        continue
+                    self._oauth_required.discard(role)
+
                 entry = self.token_store.get(role)
                 if not entry:
                     continue
-                expires_at = entry.get("expires_at")
+
+                access_token = entry.get("access_token")
                 refresh_token = entry.get("refresh_token")
-                if not expires_at or not refresh_token:
+                if not access_token:
+                    self._mark_oauth_required(role, "access_token absent dans la loop")
                     continue
-                remaining = int(expires_at) - now
-                if remaining <= 0 or remaining > 600:
+                
+                expires_at = entry.get("expires_at")
+                try:
+                    remaining = int(expires_at) - now if expires_at else -1
+                except Exception:
+                    remaining = -1
+                if remaining > 600:
                     continue
+
+                state, data = await validate_twitch_token(access_token)
+                if state == "valid":
+                    self.token_store.set_token(
+                        role=role,
+                        access_token=access_token,
+                        refresh_token=refresh_token,
+                        expires_in=(data or {}).get("expires_in"),
+                        scopes=(data or {}).get("scopes"),
+                        user_id=(data or {}).get("user_id"),
+                    )
+                    await self._inject(role, access_token, refresh_token or "")
+                    LOGGER.info("Token %s validé (loop), expires_at recalculé.", role)
+                    continue
+                if state == "error":
+                    LOGGER.warning("Token %s : validate en erreur réseau, on attend le prochain tick.", role)
+                    continue
+
+                if not refresh_token:
+                    self._mark_oauth_required(role, "access mort et refresh absent")
+                    continue
+
                 try:
                     new = await refresh_twitch_token(
                         str(self.config.twitch_client_id),
                         str(self.config.twitch_client_secret),
                         str(refresh_token),
                     )
-                    access_token = new.get("access_token")
-                    new_refresh = new.get("refresh_token", refresh_token)
-                    self.token_store.set_token(
-                        role=role,
-                        access_token=access_token,
-                        refresh_token=new_refresh,
-                        expires_in=new.get("expires_in"),
-                        scopes=new.get("scopes"),
-                        user_id=entry.get("user_id"),
-                    )
-                    await self.add_token(access_token, new_refresh)
-                    if role == "bot":
-                        self.bot_chat_token = access_token
-                    LOGGER.info("Token %s rafraichi par la loop proactive.", role)
                 except Exception as e:
-                    LOGGER.warning("Loop refresh %s echoue : %s", role, e)
+                    self._mark_oauth_required(role, f"loop refresh échoué : {e}")
+                    continue
 
+                new_access = new.get("access_token")
+                new_refresh = new.get("refresh_token", refresh_token)
+                if not new_access:
+                    self._mark_oauth_required(role, "loop refresh sans access_token")
+                    continue
+
+                self.token_store.set_token(
+                    role=role,
+                    access_token=new_access,
+                    refresh_token=new_refresh,
+                    expires_in=new.get("expires_in"),
+                    scopes=new.get("scope") or new.get("scopes"),
+                    user_id=entry.get("user_id"),
+                )
+
+                await self._inject(role, new_access, new_refresh)
+                LOGGER.info("Token %s rafraichi par la loop proactive.", role)
+                
     async def _subscribe_chat(self, broadcaster_id: str) -> None:
         bot_id = str(getattr(self, "bot_id", "") or "")
         if not broadcaster_id or not bot_id:
@@ -173,10 +199,10 @@ class Bot(commands.AutoBot):
             resp = await self.multi_subscribe(subs)
             errors = getattr(resp, "errors", None)
             if not errors:
-                LOGGER.info("Abonne au chat de %s", broadcaster_id)
+                LOGGER.info("Abonné au chat de %s", broadcaster_id)
                 return
             if any(_already_exists(e) for e in errors):
-                LOGGER.info("Souscription chat deja active (409), rien a faire.")
+                LOGGER.info("Souscription chat déjà active (409), rien à faire.")
             else:
                 LOGGER.warning("Echec souscription chat : %s", errors)
         except Exception as e:
@@ -200,18 +226,14 @@ class Bot(commands.AutoBot):
             user_id=payload_user_id or None,
         )
 
-        try:
-            await self.add_token(payload.access_token, payload.refresh_token)
-        except Exception as e:
-            LOGGER.error("add_token %s echoue : %s", role, e)
+        if not await self._inject(role, payload.access_token, payload.refresh_token):
+            LOGGER.error("add_token %s échoué malgré OAuth.", role)
 
         if is_bot:
-            self.bot_chat_token = payload.access_token
-            LOGGER.info("Token du bot ajoute et persiste.")
+            LOGGER.info("Token du bot ajouté et persiste.")
             return
 
-        self._streamer_restored = True
-        LOGGER.info("Token streamer ajoute et persiste.")
+        LOGGER.info("Token streamer ajouté et persiste.")
         await self._subscribe_chat(payload_user_id)
 
     async def event_ready(self) -> None:
@@ -229,7 +251,7 @@ def main() -> None:
     try:
         asyncio.run(runner())
     except KeyboardInterrupt:
-        LOGGER.warning("Arret.")
+        LOGGER.warning("Arrêt.")
 
 
 if __name__ == "__main__":
