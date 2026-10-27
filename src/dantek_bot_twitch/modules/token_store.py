@@ -1,6 +1,6 @@
 from __future__ import annotations
 try:
-    
+    import logging
     import json
     import os
     import time
@@ -13,6 +13,7 @@ except ModuleNotFoundError as e:
         "Impossible de démarrer l'application."
     )
 
+LOGGER = logging.getLogger("TokenStore")
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_TOKEN_PATH = ROOT / "data" / "tokens.json"
 
@@ -102,7 +103,7 @@ async def refresh_twitch_token(client_id: str, client_secret: str, refresh_token
             data={
                 "client_id" : client_id,
                 "client_secret": client_secret,
-                "grant-type": "refresh_token",
+                "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
             },
             timeout=aiohttp.ClientTimeout(total=15),
@@ -115,7 +116,7 @@ async def refresh_twitch_token(client_id: str, client_secret: str, refresh_token
                 raise RuntimeError(f"Twitch refresh HTTP {resp.status} body={_scrub(body)}")
             return body
 
-async def validate_twitch_token(access_token: str) -> tuple[str, dict] | None:
+async def validate_twitch_token(access_token: str) -> tuple[str, dict | None]:
     if not access_token:
         return ("invalid", None)
 
@@ -123,13 +124,15 @@ async def validate_twitch_token(access_token: str) -> tuple[str, dict] | None:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 "https://id.twitch.tv/oauth2/validate",
-                header={"Authorization": f"Bearer {access_token}"},
+                headers={"Authorization": f"Bearer {access_token}"},
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 if resp.status == 200:
                     return ("valid", await resp.json())
                 if resp.status == 401:
                     return ("invalid", None)
+                LOGGER.warning("validate HTTP %s (ni 200 ni 401)", resp.status)
                 return ("error", None)
-    except Exception:
+    except Exception as e:
+        LOGGER.warning("validate exception : %s : %s", type(e).__name__, str(e)[:160])
         return ("error", None)

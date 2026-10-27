@@ -96,6 +96,43 @@ class Bot(commands.AutoBot):
         self._token_fail_cooldown.pop(role, None)
         return True
 
+    async def force_refresh_now(self, role: str) -> None:
+        entry = self.token_store.get(role)
+        if not entry:
+            self._mark_oauth_required(role, "force_refresh : pas de token stocké")
+            return
+        
+        refresh_token = entry.get("refresh_token")
+        if not refresh_token:
+            self._mark_oauth_required(role, "force_refresh : refresh absent")
+            return
+        
+        try:
+            new = await refresh_twitch_token(
+                str(self.config.twitch_client_id),
+                str(self.config.twitch_client_secret),
+                str(refresh_token),
+            )
+        except Exception as e:
+            self._mark_oauth_required(role, f"force_refresh échoué : {e}")
+            return
+        
+        new_access = new.get("access_token")
+        new_refresh = new.get("refresh_token", refresh_token)
+        if not new_access:
+            self._mark_oauth_required(role, "force_refresh sans access_token")
+            return
+        self.token_store.set_token(
+            role=role,
+            access_token=new_access,
+            refresh_token=new_refresh,
+            expires_in=new.get("expires_in"),
+            scopes=new.get("scope") or new.get("scopes"),
+            user_id=entry.get("user_id"),
+        )
+        await self._inject(role, new_access, new_refresh)
+        LOGGER.info("Token %s rafraichi par force_refresh (Helix 401).", role)
+
     async def _restore_saved_tokens(self) -> None:
         for role in ("bot", "streamer"):
             entry = self.token_store.get(role)
@@ -113,8 +150,11 @@ class Bot(commands.AutoBot):
               
     async def _token_refresh_loop(self) -> None:
         LOGGER.info("Loop de refresh proactif démarrée.")
+        first_tick = True
         while True:
-            await asyncio.sleep(60)
+            if not first_tick:
+                await asyncio.sleep(60)
+            first_tick = False
             now = int(time.time())
             for role in ("bot", "streamer"):
                 if role in self._oauth_required:
@@ -153,9 +193,12 @@ class Bot(commands.AutoBot):
                     await self._inject(role, access_token, refresh_token or "")
                     LOGGER.info("Token %s validé (loop), expires_at recalculé.", role)
                     continue
-                if state == "error":
+                if state == "error" and remaining > 0:
                     LOGGER.warning("Token %s : validate en erreur réseau, on attend le prochain tick.", role)
                     continue
+
+                if state == "error":
+                    LOGGER.warning("Token %s : validate muet et accès expiré (horloge locale) -> refresh tenté malgré tout.", role)
 
                 if not refresh_token:
                     self._mark_oauth_required(role, "access mort et refresh absent")

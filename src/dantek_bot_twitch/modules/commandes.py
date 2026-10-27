@@ -106,8 +106,14 @@ class ChatCommands(commands.Component):
                     if resp.status == 200:
                         LOGGER.info("Message envoye via Helix (broadcaster=%s)", broadcaster_id)
                         return True
-
-                    LOGGER.error("Helix HTTP %s : %s", resp.status, raw[:300])
+                    if resp.status == 401:
+                        LOGGER.error("Helix 401 : token mort, refresh immédiat déclenché.")
+                        force_fn = getattr(self.bot, "force_refresh_now", None)
+                        if force_fn is not None:
+                            import asyncio
+                            asyncio.create_task(force_fn("bot"))
+                    else:
+                        LOGGER.error("Helix HTTP %s : %s", resp.status, raw[:300])
 
         except Exception as exc:
             LOGGER.error("Helix exception : %s", exc)
