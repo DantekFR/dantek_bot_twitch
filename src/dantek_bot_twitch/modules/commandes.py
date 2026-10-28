@@ -194,9 +194,7 @@ class ChatCommands(commands.Component):
 
     @commands.command(name="love")
     async def cmd_love(self, ctx: commands.Context) -> None:
-        await ctx.reply(
-            "dantekfLove Derrière chaque grand streamer se cache une femme exceptionnelle… qui attend toujours qu'il éteigne son PC. dantekfLOL"
-        )
+        await ctx.reply("dantekfLove Derrière chaque grand streamer se cache une femme exceptionnelle… qui attend toujours qu'il éteigne son PC. dantekfLOL")
 
     @commands.command(name="redonnelargent")
     async def cmd_redonnelargent(self, ctx: commands.Context) -> None:

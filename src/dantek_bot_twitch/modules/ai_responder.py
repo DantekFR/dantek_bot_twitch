@@ -61,7 +61,7 @@ async def ask_ai(question: str, facts: str, memory: str, history: list) -> str:
                     ],
         "options": {
             "temperature": 0.55,
-            "num_predict": 90,
+            "num_predict": 150,
             "num_ctx": 4096,
         }
     }

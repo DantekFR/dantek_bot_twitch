@@ -3,6 +3,7 @@ try:
     import logging
     import time
 
+    import aiohttp
     import twitchio
     from twitchio import eventsub
     from twitchio.ext import commands
@@ -72,6 +73,7 @@ class Bot(commands.AutoBot):
         if self._streamer_restored:
             await self._subscribe_chat(str(getattr(self.config, "owner_id", "") or ""))
         self._refresh_task = asyncio.create_task(self._token_refresh_loop())
+        self._stream_context_task = asyncio.create_task(self._stream_context_loop())
 
     def _mark_oauth_required(self, role: str, reason: str) -> None:
         self._oauth_required.add(role)
@@ -231,7 +233,52 @@ class Bot(commands.AutoBot):
 
                 await self._inject(role, new_access, new_refresh)
                 LOGGER.info("Token %s rafraichi par la loop proactive.", role)
-                
+
+    async def _refresh_stream_context(self) -> None:
+        if self.storage is None:
+            return
+        
+        token = self.bot_chat_token
+        broadcaster_id = str(getattr(self.config, "owner_id", "") or "")
+        client_id = str(getattr(self.config, "twitch_client_id", "") or "")
+        if not token or not broadcaster_id or not client_id:
+            return
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://api.twitch.tv/helix/channels",
+                    params={"broadcaster_id": broadcaster_id},
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Client-Id": client_id,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status != 200:
+                        LOGGER.warning("Helix channels HTTP % (token bot pas encore frais ?)", resp.status)
+                        return
+                    data = await resp.json()
+                    info = (data.get("data") or [{}])[0]
+                    game_name = (info.get("game_name") or "").strip()
+                    title = (info.get("title") or "").strip()
+        except Exception as e:
+            LOGGER.warning("Helix channels exception : %s", e)
+            return
+
+        if game_name:
+            self.storage.upsert_fact("jeu_courant", game_name)
+        if title:
+            self.storage.upsert_fact("titre-stream", title)
+        LOGGER.info("Contexte stream rafraichi : jeu=%s", game_name or "?")
+
+    async def _stream_context_loop(self) -> None:
+        LOGGER.info("Loop contexte stream démarrée.")
+        await asyncio.sleep(5)
+        while True:
+            await self._refresh_stream_context()
+            await asyncio.sleep(300)
+
     async def _subscribe_chat(self, broadcaster_id: str) -> None:
         bot_id = str(getattr(self, "bot_id", "") or "")
         if not broadcaster_id or not bot_id:
